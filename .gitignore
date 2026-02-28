@@ -7,4 +7,6 @@ __pycache__/
 .DS_Store
 .claude/
 *.egg-info/
-finemapping_chr9/ld_matrix.npy
+finemapping_chr9/*.npy
+finemapping_chr9/*.csv
+benchmarks/results/
