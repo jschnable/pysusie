@@ -1,0 +1,17 @@
+{
+  "locus_chr": 9,
+  "locus_start": 62149644,
+  "locus_end": 63149644,
+  "peak_position": 62649644,
+  "n_snps": 4719,
+  "n_samples": 827,
+  "var_y": 40.100032377364045,
+  "top_snp": "9:62581725:T:C",
+  "top_snp_pos": 62581725,
+  "top_snp_pvalue": 1.0254521941736528e-14,
+  "top_snp_z": 7.880959919633924,
+  "n_snps_in_ld": 4719,
+  "ld_matrix_file": "ld_matrix.npy",
+  "z_scores_file": "z_scores.npy",
+  "snp_order_file": "snp_order.csv"
+}

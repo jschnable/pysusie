@@ -1,0 +1,6 @@
+n_effects,regularize_ld,refine,converged,n_cs,top_pip
+5,auto,True,True,1,0.12898551857691354
+10,auto,True,True,1,0.12990800788343893
+15,auto,True,True,1,0.13082952018379634
+10,0,True,True,1,0.12990800788343893
+10,auto,False,True,1,0.12990800788343893
