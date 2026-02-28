@@ -167,6 +167,20 @@ reference-panel LD matrix:
 See [`examples/finemapping_from_vcf.py`](examples/finemapping_from_vcf.py) for
 a complete, runnable script implementing this workflow.
 
+## Batch Fine-Mapping
+
+When fine-mapping hundreds or thousands of loci (e.g., eQTL fine-mapping
+across all genes), the key optimization is loading all genotype data into
+memory once and slicing per-locus instead of re-reading from VCF each time.
+
+See [`examples/batch_finemapping.py`](examples/batch_finemapping.py) for a
+production-oriented script that demonstrates:
+
+- Preloading genotypes into a single NumPy array for fast per-locus slicing
+- Precomputing chromosome indices for O(1) window lookups
+- Checkpointing for resumable long runs
+- Both individual-level and summary-statistics fitting modes
+
 ## Optional Dependencies
 
 | Extra | Package | Used for |
