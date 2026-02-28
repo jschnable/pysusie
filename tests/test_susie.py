@@ -49,6 +49,8 @@ def test_null_weight_strips_null_column_but_tracks_alpha_null():
     assert np.all(result.alpha_null >= 0)
     assert np.all(result.alpha_null <= 1)
     assert np.isclose(result.prior_weights.sum(), 0.8)
+    cs = result.get_credible_sets()
+    assert isinstance(cs, list)
 
 
 def test_posterior_samples_shape():
@@ -176,3 +178,14 @@ def test_refine_history_is_non_decreasing():
     history = np.asarray(model.refine_history_, dtype=float)
     assert history.size >= 1
     assert np.all(np.diff(history) >= -1e-10)
+
+
+def test_fit_from_sufficient_stats_raises_if_all_variants_filtered():
+    XtX = np.eye(2)
+    Xty = np.array([1.0, -0.5])
+    yty = 3.2
+    maf = np.array([0.0, 0.0])
+    model = SuSiE(intercept=False)
+
+    with pytest.raises(ValueError, match="No variables available"):
+        model.fit_from_sufficient_stats(XtX, Xty, yty, n=50, maf=maf)

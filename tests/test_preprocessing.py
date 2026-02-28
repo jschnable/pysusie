@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from pysusie._preprocessing import (
     preprocess_individual_data,
@@ -111,3 +112,22 @@ def test_preprocess_summary_stats_numeric_lambda_reuses_r_eigendecomposition(mon
     assert calls["count"] == 1
     assert data1.eigen_values is not None
     assert data2.eigen_values is not None
+
+
+def test_preprocess_individual_data_rejects_single_sample():
+    X = np.array([[1.0, 2.0, 3.0]])
+    y = np.array([0.5])
+
+    with pytest.raises(ValueError, match="at least 2 rows"):
+        preprocess_individual_data(X, y, standardize=True, intercept=True)
+
+
+def test_preprocess_summary_stats_rejects_non_positive_var_y():
+    z = np.array([1.0, -0.5])
+    R = np.eye(2)
+
+    with pytest.raises(ValueError, match="var_y must be positive"):
+        preprocess_summary_stats(z=z, R=R, n=100, var_y=0.0)
+
+    with pytest.raises(ValueError, match="var_y must be positive"):
+        preprocess_summary_stats(z=z, R=R, n=100, var_y=-1.0)

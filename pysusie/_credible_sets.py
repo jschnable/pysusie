@@ -43,11 +43,15 @@ def extract_credible_sets(
             continue
 
         row = alpha[effect_idx]
+        if row.size == 0:
+            continue
         order = np.argsort(-row)
         cum = np.cumsum(row[order])
         # Numerical tolerance avoids adding an extra variable when cumulative
         # coverage is equal to target up to floating-point error.
-        k = int(np.searchsorted(cum + 1e-12, coverage, side="left")) + 1
+        k = int(np.searchsorted(cum + 1e-12, coverage, side="left"))
+        k = min(k, row.size - 1)
+        k += 1
         selected = order[:k]
         achieved = float(cum[k - 1])
 

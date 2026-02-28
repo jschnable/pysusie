@@ -94,6 +94,8 @@ def preprocess_individual_data(
 
     if y_arr.shape[0] != n:
         raise ValueError("X and y have incompatible shapes")
+    if n <= 1:
+        raise ValueError("X must have at least 2 rows")
 
     y_mean = float(np.mean(y_arr)) if intercept else 0.0
     y_centered = y_arr - y_mean if intercept else y_arr
@@ -315,6 +317,9 @@ def preprocess_summary_stats(
     R = ensure_2d(R, name="R")
     if R.shape[0] != R.shape[1]:
         raise ValueError("R must be square")
+    var_y = float(var_y)
+    if (not np.isfinite(var_y)) or var_y <= 0:
+        raise ValueError("var_y must be positive and finite")
 
     if z is None:
         if bhat is None or shat is None:

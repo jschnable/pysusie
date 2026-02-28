@@ -34,3 +34,16 @@ def test_compute_purity_from_R():
     assert np.isclose(purity.min_abs_corr, 0.9)
     assert np.isclose(purity.mean_abs_corr, 0.9)
     assert np.isclose(purity.median_abs_corr, 0.9)
+
+
+def test_extract_credible_sets_handles_row_mass_below_coverage():
+    alpha = np.array([[0.08, 0.02, 0.0]])
+    V = np.array([0.5])
+
+    cs = extract_credible_sets(alpha, V, coverage=0.95)
+
+    assert len(cs) == 1
+    vars_idx, achieved, effect_idx, _ = cs[0]
+    assert effect_idx == 0
+    assert np.array_equal(vars_idx, np.array([0, 1, 2]))
+    assert np.isclose(achieved, alpha.sum())

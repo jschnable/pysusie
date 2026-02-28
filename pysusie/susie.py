@@ -317,6 +317,8 @@ class SuSiE:
     ) -> "SuSiE":
         p = data.p
         p_phys = p - (1 if data.has_null_column else 0)
+        if p_phys <= 0:
+            raise ValueError("No variables available after preprocessing")
         L = min(self.n_effects, p_phys)
 
         prior_weights = self._prepare_prior_weights(p_phys)

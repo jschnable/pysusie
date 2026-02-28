@@ -44,7 +44,10 @@ def fit_mrash(
             raise ValueError("pi must have shape (K,)")
         if np.any(pi_arr < 0):
             raise ValueError("pi must be non-negative")
-        pi_arr /= np.sum(pi_arr)
+        pi_mass = float(np.sum(pi_arr))
+        if not np.isfinite(pi_mass) or pi_mass <= 0:
+            raise ValueError("pi must contain positive mass")
+        pi_arr /= pi_mass
 
     if beta_init is None:
         beta = np.zeros(p, dtype=float)
