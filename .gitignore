@@ -10,3 +10,4 @@ __pycache__/
 finemapping_chr9/*.npy
 finemapping_chr9/*.csv
 benchmarks/results/
+DESIGN.md
