@@ -56,7 +56,7 @@ def run_python_benchmark(n: int, p: int, L: int, *, max_iter: int = 100, seed: i
 def run_r_benchmark_optional(n: int, p: int, L: int, *, max_iter: int = 100, seed: int = 123) -> BenchmarkResult | None:
     try:
         from rpy2 import robjects
-        from rpy2.robjects import numpy2ri
+        from rpy2.robjects import conversion, default_converter, numpy2ri
         from rpy2.robjects.packages import importr
     except Exception:
         return None
@@ -68,19 +68,20 @@ def run_r_benchmark_optional(n: int, p: int, L: int, *, max_iter: int = 100, see
 
     X, y = simulate_problem(n, p, seed=seed)
 
-    numpy2ri.activate()
     r = robjects.r
-    r.assign("X_py", X)
-    r.assign("y_py", y)
-    r.assign("L_py", int(L))
-    r.assign("max_iter_py", int(max_iter))
+    with conversion.localconverter(default_converter + numpy2ri.converter):
+        r.assign("X_py", X)
+        r.assign("y_py", y)
+        r.assign("L_py", int(L))
+        r.assign("max_iter_py", int(max_iter))
 
     t0 = time.perf_counter()
     fit = r("susieR::susie(X_py, y_py, L=L_py, max_iter=max_iter_py)")
     runtime = time.perf_counter() - t0
 
-    converged = bool(np.array(fit.rx2("converged"))[0])
-    n_iter = int(np.array(fit.rx2("niter"))[0])
+    with conversion.localconverter(default_converter + numpy2ri.converter):
+        converged = bool(np.array(fit.rx2("converged"))[0])
+        n_iter = int(np.array(fit.rx2("niter"))[0])
 
     return BenchmarkResult(
         backend="r",
