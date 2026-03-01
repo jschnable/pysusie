@@ -149,6 +149,56 @@ def test_ibss_ss_path_populates_xtxb_effect_cache():
         assert np.allclose(state_out.XtXb_effects[l], direct, atol=1e-10)
 
 
+def test_ibss_individual_path_populates_xb_effect_cache():
+    rng = np.random.default_rng(35)
+    n, p = 120, 16
+    X = rng.normal(size=(n, p))
+    y = rng.normal(size=n)
+    data = preprocess_individual_data(X, y, standardize=True, intercept=True)
+
+    L = 4
+    alpha0 = np.full((L, data.p), 1.0 / data.p)
+    state = _ModelState(
+        alpha=alpha0,
+        mu=np.zeros((L, data.p)),
+        mu2=np.zeros((L, data.p)),
+        V=np.full(L, 0.2),
+        sigma2=1.0,
+        KL=np.zeros(L),
+        lbf=np.zeros(L),
+        lbf_variable=np.zeros((L, data.p)),
+        Xr=None,
+        XtXr=None,
+        Xb_sq_norms=np.zeros(L),
+    )
+
+    params = {
+        "prior_weights": np.full(data.p, 1.0 / data.p),
+        "estimate_prior_variance": True,
+        "prior_variance_method": "optim",
+        "prior_variance_warmup_iters": 1,
+        "prior_variance_optim_period": 4,
+        "prior_variance_force_final_optim": True,
+        "estimate_residual_variance": False,
+        "residual_variance_method": "mom",
+        "max_iter": 6,
+        "tol": 0.0,
+        "convergence_criterion": "elbo",
+        "check_null_threshold": 1e-9,
+        "verbose": False,
+    }
+
+    state_out, _, _ = ibss_loop(data, state, params)
+    assert state_out.Xb_effects is not None
+    assert state_out.Xb_effects.shape == (L, n)
+
+    # Cached Xb per effect should match direct multiplication at the solution.
+    for l in range(L):
+        bl = state_out.alpha[l] * state_out.mu[l]
+        direct = data.compute_Xb(bl)
+        assert np.allclose(state_out.Xb_effects[l], direct, atol=1e-10)
+
+
 def test_ibss_ss_batched_xtx_updates_match_direct_products():
     rng = np.random.default_rng(33)
     n, p = 100, 14

@@ -49,14 +49,17 @@ def _initialize_caches(data: _FitData, state: _ModelState) -> None:
     if data.X is not None and data.y is not None:
         state.XtXr = None
         state.XtXb_effects = None
+        state.Xb_effects = np.zeros((L, data.n), dtype=float)
         state.Xr = np.zeros(data.n, dtype=float)
         for l in range(L):
             bl = state.alpha[l] * state.mu[l]
             Xbl = data.compute_Xb(bl)
+            state.Xb_effects[l] = Xbl
             state.Xr += Xbl
             state.Xb_sq_norms[l] = float(np.dot(Xbl, Xbl))
     else:
         state.Xr = None
+        state.Xb_effects = None
         B = state.alpha * state.mu
         XtXB = data.compute_XtXB(B)
         state.XtXb_effects = XtXB
@@ -216,7 +219,10 @@ def ibss_loop(data: _FitData, state: _ModelState, params: dict[str, Any]) -> tup
             b_old = state.alpha[l] * state.mu[l]
 
             if state.Xr is not None and data.y is not None:
-                Xb_old = data.compute_Xb(b_old)
+                if state.Xb_effects is not None:
+                    Xb_old = state.Xb_effects[l]
+                else:  # defensive fallback
+                    Xb_old = data.compute_Xb(b_old)
                 state.Xr -= Xb_old
                 Xty_residual = data.compute_Xty(data.y - state.Xr)
             else:
@@ -249,6 +255,8 @@ def ibss_loop(data: _FitData, state: _ModelState, params: dict[str, Any]) -> tup
             b_new = state.alpha[l] * state.mu[l]
             if state.Xr is not None and data.y is not None:
                 Xb_new = data.compute_Xb(b_new)
+                if state.Xb_effects is not None:
+                    state.Xb_effects[l] = Xb_new
                 state.Xr += Xb_new
                 state.Xb_sq_norms[l] = float(np.dot(Xb_new, Xb_new))
             else:

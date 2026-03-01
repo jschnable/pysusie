@@ -89,7 +89,7 @@ def preprocess_individual_data(
         X_mat = X.tocsr().astype(float)
         n, p_phys = X_mat.shape
     else:
-        X_mat = ensure_2d(X, name="X").astype(float, copy=True)
+        X_mat = ensure_2d(X, name="X").astype(float, copy=False)
         n, p_phys = X_mat.shape
 
     if y_arr.shape[0] != n:
@@ -127,23 +127,27 @@ def preprocess_individual_data(
     else:
         _validate_no_nan(X_mat, "X")
         means = np.mean(X_mat, axis=0) if intercept else np.zeros(p_phys)
-        X_centered = X_mat - means if intercept else X_mat.copy()
+        # Build one Fortran-order working copy and transform in place to
+        # reduce full-array allocations on large dense matrices.
+        X_trans = np.array(X_mat, dtype=float, order="F", copy=True)
+        if intercept:
+            X_trans -= means
 
         if standardize:
-            scale = np.std(X_centered, axis=0, ddof=1)
+            scale = np.std(X_trans, axis=0, ddof=1)
             if np.any(scale <= 0):
                 raise ValueError("X contains constant columns")
         else:
             scale = np.ones(p_phys)
-            ss = np.sum(X_centered**2, axis=0)
+            ss = np.sum(X_trans**2, axis=0)
             if np.any(ss <= 0):
                 raise ValueError("X contains constant columns")
 
-        X_trans = X_centered / scale
+        X_trans /= scale
         d = np.sum(X_trans**2, axis=0)
         Xty = np.asarray(X_trans.T @ y_centered, dtype=float)
 
-        X_store = np.asfortranarray(X_trans)
+        X_store = X_trans
         X_center = means
         X_scale = scale
         is_sparse = False

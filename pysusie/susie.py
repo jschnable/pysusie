@@ -299,6 +299,7 @@ class SuSiE:
             Xr=None,
             XtXr=None,
             Xb_sq_norms=np.zeros(L, dtype=float),
+            Xb_effects=None,
             XtXb_effects=None,
             theta=None,
             tau2=None,

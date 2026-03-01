@@ -149,6 +149,7 @@ class _ModelState:
     Xr: np.ndarray | None
     XtXr: np.ndarray | None
     Xb_sq_norms: np.ndarray
+    Xb_effects: np.ndarray | None = None
     XtXb_effects: np.ndarray | None = None
 
     theta: np.ndarray | None = None
