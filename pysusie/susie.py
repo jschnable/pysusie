@@ -6,6 +6,7 @@ from collections import OrderedDict
 from typing import Any
 
 import numpy as np
+import scipy.sparse as sp
 
 from ._credible_sets import extract_credible_sets
 from ._ibss import ibss_loop
@@ -46,6 +47,33 @@ def _ensure_prior_variance(prior_variance: float | np.ndarray, L: int, ref_var: 
     return V * float(ref_var)
 
 
+def _validate_count_vector(counts: np.ndarray | None, p: int, name: str) -> np.ndarray | None:
+    if counts is None:
+        return None
+    arr = np.asarray(counts, dtype=float)
+    if arr.shape != (p,):
+        raise ValueError(f"{name} must have shape ({p},)")
+    if np.any(~np.isfinite(arr)) or np.any(arr < 0):
+        raise ValueError(f"{name} must be finite and non-negative")
+    return arr
+
+
+def _counts_from_genotypes(X, *, carrier_threshold: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    if sp.issparse(X):
+        X_csr = X.tocsr()
+        carriers = np.asarray((X_csr > carrier_threshold).sum(axis=0)).ravel().astype(float)
+        noncarriers = float(X_csr.shape[0]) - carriers
+        return carriers, noncarriers
+
+    X_arr = np.asarray(X, dtype=float)
+    if X_arr.ndim != 2:
+        raise ValueError("X must be 2D")
+    finite = np.isfinite(X_arr)
+    carriers = np.sum((X_arr > carrier_threshold) & finite, axis=0, dtype=float)
+    noncarriers = np.sum((X_arr <= carrier_threshold) & finite, axis=0, dtype=float)
+    return carriers, noncarriers
+
+
 class SuSiE:
     """Sum of Single Effects regression estimator."""
 
@@ -70,6 +98,8 @@ class SuSiE:
         "convergence_criterion",
         "coverage",
         "min_abs_corr",
+        "min_carriers",
+        "min_noncarriers",
         "refine",
         "refine_max_steps",
         "verbose",
@@ -98,6 +128,8 @@ class SuSiE:
         convergence_criterion: str = "elbo",
         coverage: float = 0.95,
         min_abs_corr: float = 0.5,
+        min_carriers: int = 10,
+        min_noncarriers: int = 10,
         refine: bool = False,
         refine_max_steps: int = 5,
         verbose: bool = False,
@@ -122,9 +154,12 @@ class SuSiE:
         self.convergence_criterion = str(convergence_criterion)
         self.coverage = float(coverage)
         self.min_abs_corr = float(min_abs_corr)
+        self.min_carriers = int(min_carriers)
+        self.min_noncarriers = int(min_noncarriers)
         self.refine = bool(refine)
         self.refine_max_steps = int(refine_max_steps)
         self.verbose = bool(verbose)
+        self._validate_support_thresholds()
 
         self._result: SuSiEResult | None = None
         self._can_predict = False
@@ -144,6 +179,8 @@ class SuSiE:
             "prior_variance_warmup_iters",
             "prior_variance_optim_period",
             "xtx_batch_size",
+            "min_carriers",
+            "min_noncarriers",
         }:
             return int(value)
         if key in {"null_weight", "tol", "coverage", "min_abs_corr"}:
@@ -174,6 +211,7 @@ class SuSiE:
         for key, value in overrides.items():
             original[key] = getattr(self, key)
             setattr(self, key, self._coerce_param_value(key, value))
+        self._validate_support_thresholds()
         return original
 
     def _restore_fit_overrides(self, original: dict[str, Any]) -> None:
@@ -210,6 +248,89 @@ class SuSiE:
             pi = np.concatenate([pi * (1.0 - self.null_weight), np.array([self.null_weight])])
 
         return pi
+
+    def _validate_support_thresholds(self) -> None:
+        if self.min_carriers < 0:
+            raise ValueError("min_carriers must be >= 0")
+        if self.min_noncarriers < 0:
+            raise ValueError("min_noncarriers must be >= 0")
+
+    def _compute_support_mask(
+        self,
+        p: int,
+        *,
+        n: int | None,
+        maf: np.ndarray | None = None,
+        carrier_counts: np.ndarray | None = None,
+        noncarrier_counts: np.ndarray | None = None,
+        allow_missing_support: bool = False,
+    ) -> np.ndarray:
+        self._validate_support_thresholds()
+        keep = np.ones(p, dtype=bool)
+        if self.min_carriers == 0 and self.min_noncarriers == 0 and maf is None:
+            return keep
+
+        carriers = _validate_count_vector(carrier_counts, p, "carrier_counts")
+        noncarriers = _validate_count_vector(noncarrier_counts, p, "noncarrier_counts")
+
+        maf_arr = None
+        if maf is not None:
+            maf_arr = np.asarray(maf, dtype=float)
+            if maf_arr.shape != (p,):
+                raise ValueError(f"maf must have shape ({p},)")
+            if np.any(~np.isfinite(maf_arr)) or np.any((maf_arr < 0) | (maf_arr > 1.0)):
+                raise ValueError("maf values must be finite and in [0, 1]")
+            keep &= maf_arr > 0
+
+        if self.min_carriers == 0 and self.min_noncarriers == 0:
+            return keep
+
+        if carriers is None and noncarriers is not None and n is not None:
+            carriers = float(n) - noncarriers
+        if noncarriers is None and carriers is not None and n is not None:
+            noncarriers = float(n) - carriers
+
+        if (carriers is None or noncarriers is None) and maf_arr is not None and n is not None:
+            expected_carriers = float(n) * (1.0 - (1.0 - maf_arr) ** 2)
+            if carriers is None:
+                carriers = expected_carriers
+            if noncarriers is None:
+                noncarriers = float(n) - expected_carriers
+
+        if carriers is None or noncarriers is None:
+            if allow_missing_support:
+                return keep
+            raise ValueError(
+                "min_carriers/min_noncarriers filtering requires carrier_counts/noncarrier_counts "
+                "(or maf + n for sufficient-statistics approximation)"
+            )
+
+        carriers = np.maximum(carriers, 0.0)
+        noncarriers = np.maximum(noncarriers, 0.0)
+
+        if self.min_carriers > 0:
+            keep &= carriers >= float(self.min_carriers)
+        if self.min_noncarriers > 0:
+            keep &= noncarriers >= float(self.min_noncarriers)
+        return keep
+
+    @staticmethod
+    def _subset_design_columns(X: Any, keep: np.ndarray):
+        if sp.issparse(X):
+            return X[:, keep]
+        if hasattr(X, "iloc"):
+            return X.iloc[:, keep]
+        X_arr = np.asarray(X)
+        return X_arr[:, keep]
+
+    @staticmethod
+    def _apply_column_mask(values: Any, keep: np.ndarray) -> Any:
+        if values is None:
+            return None
+        arr = np.asarray(values)
+        if arr.shape != (keep.size,):
+            raise ValueError(f"Array must have shape ({keep.size},)")
+        return arr[keep]
 
     def _initialize_state(
         self,
@@ -535,6 +656,26 @@ class SuSiE:
 
         try:
             feature_names = _extract_feature_names(X)
+            keep = None
+            if not hasattr(X, "shape") or len(X.shape) != 2:
+                raise ValueError("X must be 2D")
+            n_obs = int(X.shape[0])
+            p0 = int(X.shape[1])
+            if self.min_carriers > 0 or self.min_noncarriers > 0:
+                carriers, noncarriers = _counts_from_genotypes(X, carrier_threshold=0.0)
+                keep = self._compute_support_mask(
+                    p0,
+                    n=n_obs,
+                    carrier_counts=carriers,
+                    noncarrier_counts=noncarriers,
+                )
+            if keep is not None and not np.all(keep):
+                if not np.any(keep):
+                    raise ValueError("No variables available after min_carriers/min_noncarriers filtering")
+                X = self._subset_design_columns(X, keep)
+                if feature_names is not None:
+                    feature_names = [name for name, k in zip(feature_names, keep) if k]
+
             data = preprocess_individual_data(
                 X,
                 y,
@@ -579,6 +720,8 @@ class SuSiE:
         X_col_means=None,
         y_mean=None,
         maf=None,
+        carrier_counts=None,
+        noncarrier_counts=None,
         var_y=None,
         model_init=None,
         init_coef=None,
@@ -587,9 +730,33 @@ class SuSiE:
         if self.intercept and (X_col_means is None or y_mean is None):
             raise ValueError("X_col_means and y_mean are required when intercept=True")
 
+        XtX_arr = np.asarray(XtX, dtype=float)
+        Xty_arr = np.asarray(Xty, dtype=float)
+        if XtX_arr.ndim != 2 or XtX_arr.shape[0] != XtX_arr.shape[1]:
+            raise ValueError("XtX must be square")
+        if Xty_arr.shape != (XtX_arr.shape[0],):
+            raise ValueError("XtX and Xty dimension mismatch")
+
+        p0 = Xty_arr.shape[0]
+        keep = self._compute_support_mask(
+            p0,
+            n=int(n) if n is not None else None,
+            maf=maf,
+            carrier_counts=carrier_counts,
+            noncarrier_counts=noncarrier_counts,
+            allow_missing_support=True,
+        )
+        if not np.any(keep):
+            raise ValueError("No variables available after min_carriers/min_noncarriers filtering")
+        if not np.all(keep):
+            XtX_arr = XtX_arr[np.ix_(keep, keep)]
+            Xty_arr = Xty_arr[keep]
+            X_col_means = self._apply_column_mask(X_col_means, keep)
+            maf = self._apply_column_mask(maf, keep)
+
         data = preprocess_sufficient_stats(
-            XtX,
-            Xty,
+            XtX_arr,
+            Xty_arr,
             yty,
             n,
             standardize=self.standardize,
@@ -639,6 +806,8 @@ class SuSiE:
         n=None,
         bhat=None,
         shat=None,
+        carrier_counts=None,
+        noncarrier_counts=None,
         var_y=1.0,
         regularize_ld=0.0,
         estimate_residual_variance=None,
@@ -651,9 +820,33 @@ class SuSiE:
         if estimate_residual_variance and n is None:
             raise ValueError("estimate_residual_variance=True requires n")
 
+        R_arr = np.asarray(R, dtype=float)
+        if R_arr.ndim != 2 or R_arr.shape[0] != R_arr.shape[1]:
+            raise ValueError("R must be square")
+        p0 = R_arr.shape[0]
+        keep = None
+        if self.min_carriers > 0 or self.min_noncarriers > 0:
+            keep = self._compute_support_mask(
+                p0,
+                n=int(n) if n is not None else None,
+                carrier_counts=carrier_counts,
+                noncarrier_counts=noncarrier_counts,
+                allow_missing_support=True,
+            )
+            if not np.any(keep):
+                raise ValueError("No variables available after min_carriers/min_noncarriers filtering")
+            if not np.all(keep):
+                R_arr = R_arr[np.ix_(keep, keep)]
+                if z is not None:
+                    z = self._apply_column_mask(z, keep)
+                if bhat is not None:
+                    bhat = self._apply_column_mask(bhat, keep)
+                if shat is not None:
+                    shat = self._apply_column_mask(shat, keep)
+
         data = preprocess_summary_stats(
             z,
-            R,
+            R_arr,
             n,
             bhat=bhat,
             shat=shat,

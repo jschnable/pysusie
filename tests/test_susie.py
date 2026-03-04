@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pysusie import SuSiE, susie_auto
+from pysusie import SuSiE, SuSiEResult, compute_sufficient_stats, susie_auto
 from pysusie.datasets import load_example
 
 
@@ -189,3 +189,132 @@ def test_fit_from_sufficient_stats_raises_if_all_variants_filtered():
 
     with pytest.raises(ValueError, match="No variables available"):
         model.fit_from_sufficient_stats(XtX, Xty, yty, n=50, maf=maf)
+
+
+def test_fit_filters_low_support_variants_for_individual_data():
+    rng = np.random.default_rng(33)
+    n = 120
+    X = np.zeros((n, 4), dtype=float)
+    X[:, 1] = rng.binomial(2, 0.18, size=n)
+    X[:, 2] = rng.binomial(2, 0.32, size=n)
+    X[:, 3] = rng.binomial(2, 0.45, size=n)
+    rare_idx = rng.choice(n, size=5, replace=False)
+    X[rare_idx, 0] = 1.0
+    y = rng.normal(size=n)
+
+    model = SuSiE(n_effects=3, max_iter=20, min_carriers=10, min_noncarriers=10)
+    model.fit(X, y)
+
+    assert model.result_.n_variables == 3
+
+
+def test_fit_from_sufficient_stats_filters_by_carrier_counts():
+    rng = np.random.default_rng(34)
+    n = 150
+    X = np.zeros((n, 5), dtype=float)
+    X[:, 1] = rng.binomial(2, 0.15, size=n)
+    X[:, 2] = rng.binomial(2, 0.25, size=n)
+    X[:, 3] = rng.binomial(2, 0.35, size=n)
+    X[:, 4] = rng.binomial(2, 0.45, size=n)
+    rare_idx = rng.choice(n, size=6, replace=False)
+    X[rare_idx, 0] = 1.0
+    y = rng.normal(size=n)
+
+    stats = compute_sufficient_stats(X, y)
+    carrier_counts = np.sum(X > 0, axis=0)
+
+    model = SuSiE(n_effects=3, max_iter=20, min_carriers=10, min_noncarriers=10)
+    model.fit_from_sufficient_stats(
+        stats["XtX"],
+        stats["Xty"],
+        stats["yty"],
+        stats["n"],
+        X_col_means=stats["X_col_means"],
+        y_mean=stats["y_mean"],
+        carrier_counts=carrier_counts,
+    )
+
+    assert model.result_.n_variables == 4
+
+
+def test_fit_from_summary_stats_support_filter_skips_without_counts():
+    model = SuSiE(n_effects=2, max_iter=10, min_carriers=5)
+    z = np.array([1.5, -0.8, 0.2])
+    R = np.eye(3)
+
+    model.fit_from_summary_stats(z=z, R=R, n=100)
+    assert model.result_.n_variables == 3
+
+
+def test_negative_support_threshold_raises():
+    with pytest.raises(ValueError, match="min_carriers"):
+        SuSiE(min_carriers=-1)
+
+
+def test_fit_from_summary_stats_filters_by_support_counts():
+    model = SuSiE(n_effects=2, max_iter=10, min_carriers=10, min_noncarriers=10)
+    z = np.array([2.0, 1.1, -0.7, 0.3])
+    R = np.eye(4)
+    carrier_counts = np.array([4, 15, 40, 22], dtype=float)
+    noncarrier_counts = 100.0 - carrier_counts
+
+    model.fit_from_summary_stats(
+        z=z,
+        R=R,
+        n=100,
+        carrier_counts=carrier_counts,
+        noncarrier_counts=noncarrier_counts,
+    )
+
+    assert model.result_.n_variables == 3
+
+
+def test_credible_set_support_report_flags_low_support_outlier_pattern():
+    result = SuSiEResult(
+        alpha=np.array([[1.0, 0.0, 0.0]], dtype=float),
+        mu=np.zeros((1, 3), dtype=float),
+        mu2=np.zeros((1, 3), dtype=float),
+        prior_variance=np.array([1.0], dtype=float),
+        residual_variance=1.0,
+        prior_weights=np.full(3, 1.0 / 3.0, dtype=float),
+        elbo=np.array([0.0], dtype=float),
+        n_iter=1,
+        converged=True,
+        coef=np.zeros(3, dtype=float),
+        intercept=0.0,
+        lbf=np.array([12.0], dtype=float),
+        lbf_variable=np.array([[12.0, 0.0, 0.0]], dtype=float),
+        n_samples=20,
+        n_variables=3,
+        feature_names=None,
+    )
+
+    X = np.zeros((20, 3), dtype=float)
+    X[0, 0] = 1.0
+    X[1, 0] = 1.0
+    y = np.zeros(20, dtype=float)
+    y[0] = 10.0
+    y[1] = 0.0
+
+    report = result.credible_set_support_report(
+        X,
+        y,
+        min_group_size=10,
+        outlier_group_size_max=4,
+        outlier_reduction_threshold=0.8,
+    )
+
+    if hasattr(report, "iloc"):
+        rec = report.iloc[0]
+        assert int(rec["carrier_n"]) == 2
+        assert int(rec["noncarrier_n"]) == 18
+        assert bool(rec["low_support"])
+        assert bool(rec["outlier_driven"])
+        assert bool(rec["flagged"])
+    else:
+        rec = report[0]
+        assert int(rec["carrier_n"]) == 2
+        assert int(rec["noncarrier_n"]) == 18
+        assert bool(rec["low_support"])
+        assert bool(rec["outlier_driven"])
+        assert bool(rec["flagged"])

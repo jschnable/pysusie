@@ -223,7 +223,7 @@ class SuSiEResult:
         n_purity: int = 100,
     ) -> list[CredibleSet]:
         """Extract credible sets with optional purity filtering."""
-        from ._credible_sets import compute_purity, extract_credible_sets
+        from ._credible_sets import compute_purity_filtered, extract_credible_sets
 
         raw_sets = extract_credible_sets(
             self.alpha,
@@ -232,17 +232,21 @@ class SuSiEResult:
             coverage=coverage,
         )
 
+        X_arr = np.asarray(X) if X is not None else None
+        R_arr = np.asarray(R) if R is not None else None
+
         out: list[CredibleSet] = []
         for variables, cs_coverage, effect_idx, lbf in raw_sets:
             purity = None
-            if X is not None or R is not None:
-                purity = compute_purity(
+            if X_arr is not None or R_arr is not None:
+                purity = compute_purity_filtered(
                     variables,
-                    X=np.asarray(X) if X is not None else None,
-                    R=np.asarray(R) if R is not None else None,
+                    X=X_arr,
+                    R=R_arr,
                     n_purity=n_purity,
+                    min_abs_corr=min_abs_corr,
                 )
-                if purity.min_abs_corr < min_abs_corr:
+                if purity is None:
                     continue
 
             out.append(
@@ -255,6 +259,203 @@ class SuSiEResult:
                 )
             )
         return out
+
+    def credible_set_support_report(
+        self,
+        X: Any,
+        y: Any,
+        *,
+        R: Any = None,
+        coverage: float = 0.95,
+        min_abs_corr: float = 0.5,
+        n_purity: int = 100,
+        carrier_threshold: float = 0.0,
+        min_group_size: int = 10,
+        outlier_group_size_max: int = 6,
+        outlier_reduction_threshold: float = 0.5,
+    ):
+        """Return per-credible-set support diagnostics and heuristic flags.
+
+        Notes
+        -----
+        - Carrier status is defined as ``X[:, j] > carrier_threshold`` for each
+          CS lead variable ``j``.
+        - ``low_support`` flags small minority groups.
+        - ``outlier_driven`` flags cases where dropping one minority sample
+          collapses most of the minority-vs-majority mean difference.
+        """
+        if min_group_size < 0:
+            raise ValueError("min_group_size must be >= 0")
+        if outlier_group_size_max < 0:
+            raise ValueError("outlier_group_size_max must be >= 0")
+        if not (0.0 <= outlier_reduction_threshold <= 1.0):
+            raise ValueError("outlier_reduction_threshold must be in [0, 1]")
+
+        if not hasattr(X, "shape") or len(X.shape) != 2:
+            raise ValueError("X must be 2D")
+        y_arr = np.asarray(y, dtype=float)
+        if y_arr.ndim != 1:
+            raise ValueError("y must be 1D")
+        if X.shape[0] != y_arr.shape[0]:
+            raise ValueError("X and y have incompatible shapes")
+
+        cs_list = self.get_credible_sets(
+            X=X,
+            R=R,
+            coverage=coverage,
+            min_abs_corr=min_abs_corr,
+            n_purity=n_purity,
+        )
+
+        def _column_values(mat: Any, idx: int) -> np.ndarray:
+            if sp.issparse(mat):
+                return np.asarray(mat[:, idx].toarray()).ravel()
+            return np.asarray(mat, dtype=float)[:, idx]
+
+        rows: list[dict[str, Any]] = []
+        for cs_idx, cs in enumerate(cs_list):
+            vars_idx = np.asarray(cs.variables, dtype=int)
+            if vars_idx.size == 0:
+                continue
+            lead_local = int(np.argmax(self.pip[vars_idx]))
+            lead_var = int(vars_idx[lead_local])
+
+            x_col = _column_values(X, lead_var)
+            valid = np.isfinite(x_col) & np.isfinite(y_arr)
+            if not np.any(valid):
+                continue
+
+            carrier = (x_col > carrier_threshold) & valid
+            noncarrier = (~(x_col > carrier_threshold)) & valid
+            carrier_n = int(np.sum(carrier))
+            noncarrier_n = int(np.sum(noncarrier))
+            if carrier_n == 0 or noncarrier_n == 0:
+                minority_group = "carriers" if carrier_n <= noncarrier_n else "noncarriers"
+                minority_n = min(carrier_n, noncarrier_n)
+                majority_n = max(carrier_n, noncarrier_n)
+                rows.append(
+                    {
+                        "credible_set": cs_idx,
+                        "effect_index": int(cs.effect_index),
+                        "size": int(vars_idx.size),
+                        "coverage": float(cs.coverage),
+                        "log_bayes_factor": float(cs.log_bayes_factor),
+                        "lead_variable": lead_var,
+                        "lead_pip": float(self.pip[lead_var]),
+                        "carrier_n": carrier_n,
+                        "noncarrier_n": noncarrier_n,
+                        "minority_group": minority_group,
+                        "minority_n": int(minority_n),
+                        "majority_n": int(majority_n),
+                        "carrier_mean": float(np.nan),
+                        "noncarrier_mean": float(np.nan),
+                        "minority_mean": float(np.nan),
+                        "majority_mean": float(np.nan),
+                        "minority_minus_majority_mean": float(np.nan),
+                        "leave_one_out_reduction": float(np.nan),
+                        "low_support": bool(minority_n < min_group_size),
+                        "outlier_driven": bool(minority_n <= 1 and majority_n > 0),
+                        "flagged": bool((minority_n < min_group_size) or (minority_n <= 1 and majority_n > 0)),
+                    }
+                )
+                continue
+
+            y_car = y_arr[carrier]
+            y_non = y_arr[noncarrier]
+            carrier_mean = float(np.mean(y_car))
+            noncarrier_mean = float(np.mean(y_non))
+
+            if carrier_n <= noncarrier_n:
+                minority_group = "carriers"
+                minority_vals = y_car
+                majority_mean = noncarrier_mean
+            else:
+                minority_group = "noncarriers"
+                minority_vals = y_non
+                majority_mean = carrier_mean
+            minority_n = int(minority_vals.size)
+            majority_n = int(max(carrier_n, noncarrier_n))
+            minority_mean = float(np.mean(minority_vals))
+            delta = minority_mean - majority_mean
+
+            abs_delta = abs(delta)
+            if minority_n <= 1:
+                leave_one_out_reduction = 1.0 if abs_delta > 0 else 0.0
+            else:
+                loo_abs = np.empty(minority_n, dtype=float)
+                total = float(np.sum(minority_vals))
+                denom = float(minority_n - 1)
+                for i in range(minority_n):
+                    mean_loo = (total - float(minority_vals[i])) / denom
+                    loo_abs[i] = abs(mean_loo - majority_mean)
+                min_loo_abs = float(np.min(loo_abs))
+                leave_one_out_reduction = 0.0 if abs_delta == 0 else float(1.0 - (min_loo_abs / abs_delta))
+                leave_one_out_reduction = float(np.clip(leave_one_out_reduction, 0.0, 1.0))
+
+            low_support = minority_n < min_group_size
+            outlier_driven = (
+                minority_n <= outlier_group_size_max
+                and leave_one_out_reduction >= outlier_reduction_threshold
+            )
+
+            rows.append(
+                {
+                    "credible_set": cs_idx,
+                    "effect_index": int(cs.effect_index),
+                    "size": int(vars_idx.size),
+                    "coverage": float(cs.coverage),
+                    "log_bayes_factor": float(cs.log_bayes_factor),
+                    "lead_variable": lead_var,
+                    "lead_pip": float(self.pip[lead_var]),
+                    "carrier_n": carrier_n,
+                    "noncarrier_n": noncarrier_n,
+                    "minority_group": minority_group,
+                    "minority_n": minority_n,
+                    "majority_n": majority_n,
+                    "carrier_mean": carrier_mean,
+                    "noncarrier_mean": noncarrier_mean,
+                    "minority_mean": minority_mean,
+                    "majority_mean": float(majority_mean),
+                    "minority_minus_majority_mean": float(delta),
+                    "leave_one_out_reduction": leave_one_out_reduction,
+                    "low_support": bool(low_support),
+                    "outlier_driven": bool(outlier_driven),
+                    "flagged": bool(low_support or outlier_driven),
+                }
+            )
+
+        try:
+            import pandas as pd
+        except ImportError:  # pragma: no cover - optional dependency
+            return rows
+
+        if not rows:
+            return pd.DataFrame(
+                columns=[
+                    "credible_set",
+                    "effect_index",
+                    "size",
+                    "coverage",
+                    "log_bayes_factor",
+                    "lead_variable",
+                    "lead_pip",
+                    "carrier_n",
+                    "noncarrier_n",
+                    "minority_group",
+                    "minority_n",
+                    "majority_n",
+                    "carrier_mean",
+                    "noncarrier_mean",
+                    "minority_mean",
+                    "majority_mean",
+                    "minority_minus_majority_mean",
+                    "leave_one_out_reduction",
+                    "low_support",
+                    "outlier_driven",
+                    "flagged",
+                ]
+            )
+        return pd.DataFrame(rows)
 
     def posterior_mean(self, prior_tol: float = 1e-9) -> np.ndarray:
         """Posterior mean E[b]."""
