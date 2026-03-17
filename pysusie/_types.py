@@ -191,10 +191,49 @@ class SuSiEResult:
     n_samples: int
     n_variables: int
     feature_names: list[str] | None
+    # Deprecated alias kept for transition; equals n_variables.
+    original_n_variables: int | None = None
+    # Maps fitted/reduced variables to original variable indices.
+    kept_indices: np.ndarray | None = None
 
     alpha_null: np.ndarray | None = None
 
     def __post_init__(self) -> None:
+        n_variables = int(self.n_variables)
+        if n_variables <= 0:
+            raise ValueError("n_variables must be positive")
+
+        if self.original_n_variables is not None and int(self.original_n_variables) != n_variables:
+            raise ValueError("original_n_variables must equal n_variables")
+        object.__setattr__(self, "original_n_variables", n_variables)
+
+        kept = self.kept_indices
+        if kept is None:
+            kept_arr = np.arange(n_variables, dtype=int)
+        else:
+            kept_arr = np.asarray(kept, dtype=int)
+            if kept_arr.ndim != 1:
+                raise ValueError("kept_indices must be 1D")
+            if np.any(kept_arr < 0) or np.any(kept_arr >= n_variables):
+                raise ValueError("kept_indices values are out of range")
+            if np.unique(kept_arr).size != kept_arr.size:
+                raise ValueError("kept_indices must be unique")
+        object.__setattr__(self, "kept_indices", kept_arr)
+
+        p_fit = int(kept_arr.size)
+        if self.alpha.shape[1] != p_fit:
+            raise ValueError(f"alpha must have shape (L, {p_fit})")
+        if self.mu.shape != self.alpha.shape:
+            raise ValueError("mu must have the same shape as alpha")
+        if self.mu2.shape != self.alpha.shape:
+            raise ValueError("mu2 must have the same shape as alpha")
+        if self.prior_weights.shape != (p_fit,):
+            raise ValueError(f"prior_weights must have shape ({p_fit},)")
+        if self.coef.shape != (n_variables,):
+            raise ValueError(f"coef must have shape ({n_variables},)")
+        if self.lbf_variable.shape != self.alpha.shape:
+            raise ValueError("lbf_variable must have the same shape as alpha")
+
         freeze_array(self.alpha)
         freeze_array(self.mu)
         freeze_array(self.mu2)
@@ -204,14 +243,61 @@ class SuSiEResult:
         freeze_array(self.coef)
         freeze_array(self.lbf)
         freeze_array(self.lbf_variable)
+        freeze_array(self.kept_indices)
         freeze_array(self.alpha_null)
 
     @cached_property
-    def pip(self) -> np.ndarray:
-        """Posterior inclusion probability for each variable."""
+    def n_fitted_variables(self) -> int:
+        """Number of variables actually fit after filtering."""
+        return int(self.kept_variable_indices.size)
+
+    @cached_property
+    def pip_reduced(self) -> np.ndarray:
+        """Posterior inclusion probability for fitted/reduced variables."""
         log1m = np.sum(log1mexp_from_probs(self.alpha), axis=0)
         pip = 1.0 - np.exp(log1m)
         return np.clip(pip, 0.0, 1.0)
+
+    @cached_property
+    def pip(self) -> np.ndarray:
+        """Posterior inclusion probability for all original variables."""
+        return self._expand_reduced(self.pip_reduced, fill_value=0.0)
+
+    @cached_property
+    def has_filtered_variables(self) -> bool:
+        """Whether variables were filtered before fitting."""
+        return self.n_fitted_variables != int(self.n_variables)
+
+    @cached_property
+    def kept_variable_indices(self) -> np.ndarray:
+        """Indices in the original input corresponding to retained variables."""
+        return self.kept_indices
+
+    @cached_property
+    def dropped_variable_indices(self) -> np.ndarray:
+        """Indices in the original input that were dropped before fitting."""
+        if not self.has_filtered_variables:
+            return np.array([], dtype=int)
+        dropped_mask = np.ones(int(self.n_variables), dtype=bool)
+        dropped_mask[self.kept_variable_indices] = False
+        return np.flatnonzero(dropped_mask)
+
+    def _expand_reduced(self, values: np.ndarray, *, fill_value: float) -> np.ndarray:
+        out = np.full(int(self.n_variables), float(fill_value), dtype=float)
+        out[self.kept_variable_indices] = np.asarray(values, dtype=float)
+        return out
+
+    def pip_full(self, *, fill_value: float = 0.0) -> np.ndarray:
+        """Return PIPs expanded to original variable dimension.
+
+        Dropped variables are assigned ``fill_value`` (for example 0 or ``np.nan``).
+        """
+        return self._expand_reduced(self.pip_reduced, fill_value=fill_value)
+
+    @cached_property
+    def coef_reduced(self) -> np.ndarray:
+        """Posterior mean coefficients on fitted/reduced variables."""
+        return np.asarray(self.coef[self.kept_variable_indices], dtype=float)
 
     def get_credible_sets(
         self,
@@ -236,11 +322,31 @@ class SuSiEResult:
         R_arr = np.asarray(R) if R is not None else None
 
         out: list[CredibleSet] = []
-        for variables, cs_coverage, effect_idx, lbf in raw_sets:
+        kept = self.kept_variable_indices
+        for vars_reduced, cs_coverage, effect_idx, lbf in raw_sets:
+            vars_public = kept[np.asarray(vars_reduced, dtype=int)]
             purity = None
             if X_arr is not None or R_arr is not None:
+                vars_for_purity = vars_public
+                if X_arr is not None:
+                    if X_arr.shape[1] == self.n_fitted_variables:
+                        vars_for_purity = np.asarray(vars_reduced, dtype=int)
+                    elif X_arr.shape[1] != self.n_variables:
+                        raise ValueError(
+                            "X must have columns matching either n_variables or n_fitted_variables"
+                        )
+                if R_arr is not None:
+                    if R_arr.shape[0] != R_arr.shape[1]:
+                        raise ValueError("R must be square")
+                    if R_arr.shape[0] == self.n_fitted_variables:
+                        vars_for_purity = np.asarray(vars_reduced, dtype=int)
+                    elif R_arr.shape[0] != self.n_variables:
+                        raise ValueError(
+                            "R dimensions must match either n_variables or n_fitted_variables"
+                        )
+
                 purity = compute_purity_filtered(
-                    variables,
+                    vars_for_purity,
                     X=X_arr,
                     R=R_arr,
                     n_purity=n_purity,
@@ -251,7 +357,7 @@ class SuSiEResult:
 
             out.append(
                 CredibleSet(
-                    variables=variables,
+                    variables=np.asarray(vars_public, dtype=int),
                     coverage=float(cs_coverage),
                     effect_index=int(effect_idx),
                     log_bayes_factor=float(lbf),
@@ -298,6 +404,14 @@ class SuSiEResult:
             raise ValueError("y must be 1D")
         if X.shape[0] != y_arr.shape[0]:
             raise ValueError("X and y have incompatible shapes")
+        if X.shape[1] not in {self.n_variables, self.n_fitted_variables}:
+            raise ValueError("X column count must match n_variables or n_fitted_variables")
+
+        x_is_reduced = X.shape[1] == self.n_fitted_variables and self.has_filtered_variables
+        public_to_reduced = None
+        if x_is_reduced:
+            public_to_reduced = np.full(self.n_variables, fill_value=-1, dtype=int)
+            public_to_reduced[self.kept_variable_indices] = np.arange(self.n_fitted_variables, dtype=int)
 
         cs_list = self.get_credible_sets(
             X=X,
@@ -319,8 +433,14 @@ class SuSiEResult:
                 continue
             lead_local = int(np.argmax(self.pip[vars_idx]))
             lead_var = int(vars_idx[lead_local])
+            lead_col = lead_var
+            if x_is_reduced:
+                assert public_to_reduced is not None
+                lead_col = int(public_to_reduced[lead_var])
+                if lead_col < 0:
+                    continue
 
-            x_col = _column_values(X, lead_var)
+            x_col = _column_values(X, lead_col)
             valid = np.isfinite(x_col) & np.isfinite(y_arr)
             if not np.any(valid):
                 continue
@@ -461,14 +581,15 @@ class SuSiEResult:
         """Posterior mean E[b]."""
         active = self.prior_variance > prior_tol
         if not np.any(active):
-            return np.zeros(self.n_variables)
-        return np.sum(self.alpha[active] * self.mu[active], axis=0)
+            return np.zeros(self.n_variables, dtype=float)
+        mean_reduced = np.sum(self.alpha[active] * self.mu[active], axis=0)
+        return self._expand_reduced(mean_reduced, fill_value=0.0)
 
     def posterior_sd(self, prior_tol: float = 1e-9) -> np.ndarray:
         """Posterior standard deviation for each coefficient."""
         active = self.prior_variance > prior_tol
         if not np.any(active):
-            return np.zeros(self.n_variables)
+            return np.zeros(self.n_variables, dtype=float)
 
         a = self.alpha[active]
         m = self.mu[active]
@@ -476,8 +597,9 @@ class SuSiEResult:
 
         eb_l = a * m
         var_l = a * m2 - eb_l**2
-        var = np.sum(np.maximum(var_l, 0.0), axis=0)
-        return np.sqrt(np.maximum(var, 0.0))
+        var_reduced = np.sum(np.maximum(var_l, 0.0), axis=0)
+        sd_reduced = np.sqrt(np.maximum(var_reduced, 0.0))
+        return self._expand_reduced(sd_reduced, fill_value=0.0)
 
     def posterior_samples(
         self,
@@ -487,23 +609,23 @@ class SuSiEResult:
     ) -> np.ndarray:
         """Draw samples from the mean-field SuSiE posterior approximation."""
         generator = rng_from_seed(rng)
-        p = self.n_variables
+        p_fit = self.n_fitted_variables
         L = self.alpha.shape[0]
 
-        draws = np.zeros((n_samples, p))
+        draws = np.zeros((n_samples, self.n_variables), dtype=float)
         for i in range(n_samples):
-            sample = np.zeros(p)
+            sample_reduced = np.zeros(p_fit, dtype=float)
             for l in range(L):
                 probs = self.alpha[l]
                 has_null = self.alpha_null is not None
                 if has_null:
                     probs = np.concatenate([probs, np.array([self.alpha_null[l]])])
                 idx = generator.choice(probs.size, p=probs)
-                if has_null and idx == p:
+                if has_null and idx == p_fit:
                     continue
                 cond_var = max(self.mu2[l, idx] - self.mu[l, idx] ** 2, 0.0)
-                sample[idx] += generator.normal(self.mu[l, idx], np.sqrt(cond_var))
-            draws[i] = sample
+                sample_reduced[idx] += generator.normal(self.mu[l, idx], np.sqrt(cond_var))
+            draws[i] = self._expand_reduced(sample_reduced, fill_value=0.0)
         return draws
 
     def lsfr(self) -> np.ndarray:

@@ -18,6 +18,9 @@ def test_susie_fit_predict_and_forwarding_properties():
     assert out is model
     assert model.result_.coef.shape == (25,)
     assert model.pip_.shape == (25,)
+    assert model.result_.has_filtered_variables is False
+    assert model.result_.original_n_variables == 25
+    np.testing.assert_allclose(model.result_.pip_full(), model.pip_)
     yhat = model.predict(X[:5])
     assert yhat.shape == (5,)
 
@@ -205,7 +208,24 @@ def test_fit_filters_low_support_variants_for_individual_data():
     model = SuSiE(n_effects=3, max_iter=20, min_carriers=10, min_noncarriers=10)
     model.fit(X, y)
 
-    assert model.result_.n_variables == 3
+    assert model.result_.n_variables == 4
+    assert model.result_.n_fitted_variables == 3
+    assert model.result_.original_n_variables == 4
+    np.testing.assert_array_equal(model.result_.kept_variable_indices, np.array([1, 2, 3]))
+    np.testing.assert_array_equal(model.result_.dropped_variable_indices, np.array([0]))
+    assert model.result_.coef.shape == (4,)
+    assert model.result_.coef[0] == 0.0
+    assert model.result_.pip.shape == (4,)
+    assert model.result_.pip[0] == 0.0
+    np.testing.assert_allclose(model.result_.pip[model.result_.kept_variable_indices], model.result_.pip_reduced)
+    p_full = model.result_.pip_full()
+    assert p_full.shape == (4,)
+    assert p_full[0] == 0.0
+    np.testing.assert_allclose(p_full[model.result_.kept_variable_indices], model.result_.pip_reduced)
+    p_full_nan = model.result_.pip_full(fill_value=np.nan)
+    assert np.isnan(p_full_nan[0])
+    yhat = model.predict(X[:10])
+    assert yhat.shape == (10,)
 
 
 def test_fit_from_sufficient_stats_filters_by_carrier_counts():
@@ -234,7 +254,15 @@ def test_fit_from_sufficient_stats_filters_by_carrier_counts():
         carrier_counts=carrier_counts,
     )
 
-    assert model.result_.n_variables == 4
+    assert model.result_.n_variables == 5
+    assert model.result_.n_fitted_variables == 4
+    assert model.result_.original_n_variables == 5
+    np.testing.assert_array_equal(model.result_.kept_variable_indices, np.array([1, 2, 3, 4]))
+    np.testing.assert_array_equal(model.result_.dropped_variable_indices, np.array([0]))
+    p_full = model.result_.pip_full()
+    assert p_full.shape == (5,)
+    assert p_full[0] == 0.0
+    np.testing.assert_allclose(p_full[model.result_.kept_variable_indices], model.result_.pip_reduced)
 
 
 def test_fit_from_summary_stats_support_filter_skips_without_counts():
@@ -266,7 +294,15 @@ def test_fit_from_summary_stats_filters_by_support_counts():
         noncarrier_counts=noncarrier_counts,
     )
 
-    assert model.result_.n_variables == 3
+    assert model.result_.n_variables == 4
+    assert model.result_.n_fitted_variables == 3
+    assert model.result_.original_n_variables == 4
+    np.testing.assert_array_equal(model.result_.kept_variable_indices, np.array([1, 2, 3]))
+    np.testing.assert_array_equal(model.result_.dropped_variable_indices, np.array([0]))
+    p_full = model.result_.pip_full(fill_value=np.nan)
+    assert p_full.shape == (4,)
+    assert np.isnan(p_full[0])
+    np.testing.assert_allclose(p_full[model.result_.kept_variable_indices], model.result_.pip_reduced)
 
 
 def test_credible_set_support_report_flags_low_support_outlier_pattern():
@@ -318,3 +354,29 @@ def test_credible_set_support_report_flags_low_support_outlier_pattern():
         assert bool(rec["low_support"])
         assert bool(rec["outlier_driven"])
         assert bool(rec["flagged"])
+
+
+def test_get_credible_sets_uses_original_indices_after_filtering():
+    result = SuSiEResult(
+        alpha=np.array([[0.1, 0.9]], dtype=float),
+        mu=np.zeros((1, 2), dtype=float),
+        mu2=np.zeros((1, 2), dtype=float),
+        prior_variance=np.array([1.0], dtype=float),
+        residual_variance=1.0,
+        prior_weights=np.array([0.5, 0.5], dtype=float),
+        elbo=np.array([0.0], dtype=float),
+        n_iter=1,
+        converged=True,
+        coef=np.zeros(4, dtype=float),
+        intercept=0.0,
+        lbf=np.array([2.0], dtype=float),
+        lbf_variable=np.array([[0.0, 2.0]], dtype=float),
+        n_samples=50,
+        n_variables=4,
+        feature_names=None,
+        kept_indices=np.array([1, 3], dtype=int),
+    )
+
+    cs = result.get_credible_sets(coverage=0.8)
+    assert len(cs) == 1
+    np.testing.assert_array_equal(cs[0].variables, np.array([3]))

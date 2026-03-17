@@ -344,6 +344,8 @@ class SuSiE:
         *,
         model_init: SuSiEResult | None = None,
         init_coef: np.ndarray | None = None,
+        kept_indices: np.ndarray | None = None,
+        original_n_variables: int | None = None,
         summary_scale: bool,
     ) -> _ModelState:
         alpha = np.tile(prior_weights, (L, 1))
@@ -351,10 +353,16 @@ class SuSiE:
         mu2 = np.zeros((L, p), dtype=float)
         V = V_init.copy()
         sigma2 = float(max(sigma2_init, 1e-12))
+        kept = np.arange(p_phys, dtype=int) if kept_indices is None else np.asarray(kept_indices, dtype=int)
+        p_orig = int(p_phys if original_n_variables is None else original_n_variables)
 
         if model_init is not None:
-            if model_init.n_variables != p_phys:
+            if model_init.n_fitted_variables != p_phys:
                 raise ValueError("model_init has incompatible number of variables")
+            if model_init.n_variables != p_orig:
+                raise ValueError("model_init has incompatible original variable count")
+            if not np.array_equal(model_init.kept_variable_indices, kept):
+                raise ValueError("model_init has incompatible kept variable indices")
 
             l_take = min(L, model_init.alpha.shape[0])
             alpha_init = np.asarray(model_init.alpha[:l_take], dtype=float).copy()
@@ -382,8 +390,10 @@ class SuSiE:
 
         if init_coef is not None:
             coef = np.asarray(init_coef, dtype=float)
-            if coef.shape != (p_phys,):
-                raise ValueError(f"init_coef must have shape ({p_phys},)")
+            if coef.shape == (p_orig,):
+                coef = coef[kept]
+            elif coef.shape != (p_phys,):
+                raise ValueError(f"init_coef must have shape ({p_phys},) or ({p_orig},)")
 
             coef_internal = coef.copy()
             if (not summary_scale) and (self._X_scale is not None):
@@ -434,6 +444,8 @@ class SuSiE:
         feature_names: list[str] | None,
         estimate_residual_variance: bool,
         summary_scale: bool,
+        original_n_variables: int | None = None,
+        kept_indices: np.ndarray | None = None,
         model_init: Any = None,
         init_coef: np.ndarray | None = None,
     ) -> "SuSiE":
@@ -465,6 +477,8 @@ class SuSiE:
             V_init,
             model_init=init_result,
             init_coef=init_coef,
+            kept_indices=kept_indices,
+            original_n_variables=original_n_variables,
             summary_scale=summary_scale,
         )
 
@@ -505,19 +519,26 @@ class SuSiE:
 
         coef_internal = np.sum(alpha * mu, axis=0)
 
+        p_orig = int(original_n_variables) if original_n_variables is not None else int(p_phys)
+        kept = np.arange(p_phys, dtype=int) if kept_indices is None else np.asarray(kept_indices, dtype=int)
+        if kept.shape != (p_phys,):
+            raise ValueError(f"kept_indices must have shape ({p_phys},)")
+
         if summary_scale:
-            coef = coef_internal
+            coef_reduced = coef_internal
             intercept = 0.0
         else:
             if self._X_scale is not None:
-                coef = coef_internal / self._X_scale
+                coef_reduced = coef_internal / self._X_scale
             else:
-                coef = coef_internal.copy()
+                coef_reduced = coef_internal.copy()
             if self.intercept:
-                center = self._X_col_means if self._X_col_means is not None else np.zeros_like(coef)
-                intercept = float(self._y_mean - np.dot(center, coef))
+                center = self._X_col_means if self._X_col_means is not None else np.zeros_like(coef_reduced)
+                intercept = float(self._y_mean - np.dot(center, coef_reduced))
             else:
                 intercept = 0.0
+        coef = np.zeros(p_orig, dtype=float)
+        coef[kept] = coef_reduced
 
         self._result = SuSiEResult(
             alpha=np.asarray(alpha, dtype=float),
@@ -534,8 +555,10 @@ class SuSiE:
             lbf=np.asarray(state.lbf, dtype=float),
             lbf_variable=np.asarray(lbf_variable, dtype=float),
             n_samples=int(data.n),
-            n_variables=int(p_phys),
+            n_variables=int(p_orig),
             feature_names=feature_names,
+            original_n_variables=int(p_orig),
+            kept_indices=np.asarray(kept_indices, dtype=int) if kept_indices is not None else None,
             alpha_null=alpha_null,
         )
 
@@ -548,6 +571,8 @@ class SuSiE:
         feature_names: list[str] | None,
         estimate_residual_variance: bool,
         summary_scale: bool,
+        original_n_variables: int | None = None,
+        kept_indices: np.ndarray | None = None,
         model_init: Any = None,
         init_coef: np.ndarray | None = None,
     ) -> None:
@@ -557,7 +582,7 @@ class SuSiE:
         if not self.refine or self._result is None:
             return
 
-        p_phys = self._result.n_variables
+        p_phys = self._result.n_fitted_variables
         if p_phys <= 1:
             return
 
@@ -613,6 +638,8 @@ class SuSiE:
                         feature_names=feature_names,
                         estimate_residual_variance=estimate_residual_variance,
                         summary_scale=summary_scale,
+                        original_n_variables=original_n_variables,
+                        kept_indices=kept_indices,
                         model_init=None,
                         init_coef=None,
                     )
@@ -625,6 +652,8 @@ class SuSiE:
                         feature_names=feature_names,
                         estimate_residual_variance=estimate_residual_variance,
                         summary_scale=summary_scale,
+                        original_n_variables=original_n_variables,
+                        kept_indices=kept_indices,
                         model_init=t_k,
                         init_coef=None,
                     )
@@ -673,8 +702,7 @@ class SuSiE:
                 if not np.any(keep):
                     raise ValueError("No variables available after min_carriers/min_noncarriers filtering")
                 X = self._subset_design_columns(X, keep)
-                if feature_names is not None:
-                    feature_names = [name for name, k in zip(feature_names, keep) if k]
+            kept_indices = np.flatnonzero(keep) if (keep is not None and not np.all(keep)) else None
 
             data = preprocess_individual_data(
                 X,
@@ -695,6 +723,8 @@ class SuSiE:
                 feature_names=feature_names,
                 estimate_residual_variance=self.estimate_residual_variance,
                 summary_scale=False,
+                original_n_variables=p0,
+                kept_indices=kept_indices,
                 model_init=model_init,
                 init_coef=init_coef,
             )
@@ -703,6 +733,8 @@ class SuSiE:
                 feature_names=feature_names,
                 estimate_residual_variance=self.estimate_residual_variance,
                 summary_scale=False,
+                original_n_variables=p0,
+                kept_indices=kept_indices,
                 model_init=model_init,
                 init_coef=init_coef,
             )
@@ -753,6 +785,7 @@ class SuSiE:
             Xty_arr = Xty_arr[keep]
             X_col_means = self._apply_column_mask(X_col_means, keep)
             maf = self._apply_column_mask(maf, keep)
+        kept_indices = np.flatnonzero(keep) if not np.all(keep) else None
 
         data = preprocess_sufficient_stats(
             XtX_arr,
@@ -785,6 +818,8 @@ class SuSiE:
             feature_names=None,
             estimate_residual_variance=self.estimate_residual_variance,
             summary_scale=False,
+            original_n_variables=p0,
+            kept_indices=kept_indices,
             model_init=model_init,
             init_coef=init_coef,
         )
@@ -793,6 +828,8 @@ class SuSiE:
             feature_names=None,
             estimate_residual_variance=self.estimate_residual_variance,
             summary_scale=False,
+            original_n_variables=p0,
+            kept_indices=kept_indices,
             model_init=model_init,
             init_coef=init_coef,
         )
@@ -843,6 +880,7 @@ class SuSiE:
                     bhat = self._apply_column_mask(bhat, keep)
                 if shat is not None:
                     shat = self._apply_column_mask(shat, keep)
+        kept_indices = np.flatnonzero(keep) if (keep is not None and not np.all(keep)) else None
 
         data = preprocess_summary_stats(
             z,
@@ -866,6 +904,8 @@ class SuSiE:
             feature_names=None,
             estimate_residual_variance=bool(estimate_residual_variance),
             summary_scale=True,
+            original_n_variables=p0,
+            kept_indices=kept_indices,
             model_init=model_init,
             init_coef=init_coef,
         )
@@ -874,6 +914,8 @@ class SuSiE:
             feature_names=None,
             estimate_residual_variance=bool(estimate_residual_variance),
             summary_scale=True,
+            original_n_variables=p0,
+            kept_indices=kept_indices,
             model_init=model_init,
             init_coef=init_coef,
         )

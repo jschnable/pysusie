@@ -1,6 +1,6 @@
 import numpy as np
 
-from pysusie._credible_sets import compute_purity, extract_credible_sets
+from pysusie._credible_sets import compute_purity, compute_purity_filtered, extract_credible_sets
 
 
 def test_extract_credible_sets_and_deduplicate():
@@ -47,3 +47,28 @@ def test_extract_credible_sets_handles_row_mass_below_coverage():
     assert effect_idx == 0
     assert np.array_equal(vars_idx, np.array([0, 1, 2]))
     assert np.isclose(achieved, alpha.sum())
+
+
+def test_compute_purity_filtered_returns_none_when_threshold_fails():
+    R = np.array(
+        [
+            [1.0, 0.2, 0.1],
+            [0.2, 1.0, 0.9],
+            [0.1, 0.9, 1.0],
+        ]
+    )
+    out = compute_purity_filtered(np.array([0, 1, 2]), R=R, min_abs_corr=0.5)
+    assert out is None
+
+
+def test_compute_purity_filtered_returns_metrics_when_threshold_passes():
+    R = np.array(
+        [
+            [1.0, 0.8, 0.7],
+            [0.8, 1.0, 0.9],
+            [0.7, 0.9, 1.0],
+        ]
+    )
+    out = compute_purity_filtered(np.array([0, 1, 2]), R=R, min_abs_corr=0.5)
+    assert out is not None
+    assert np.isclose(out.min_abs_corr, 0.7)

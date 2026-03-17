@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import numpy as np
 
 from ._types import PurityMetrics
 
 
+_TRIU_CACHE: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _upper_triangle_indices(n: int) -> tuple[np.ndarray, np.ndarray]:
+    key = int(n)
+    cached = _TRIU_CACHE.get(key)
+    if cached is not None:
+        return cached
+    iu = np.triu_indices(key, k=1)
+    _TRIU_CACHE[key] = iu
+    return iu
+
+
 def _upper_triangle_values(a: np.ndarray) -> np.ndarray:
-    iu = np.triu_indices(a.shape[0], k=1)
+    iu = _upper_triangle_indices(a.shape[0])
     return a[iu]
 
 
@@ -113,6 +124,65 @@ def compute_purity(
 
     return PurityMetrics(
         min_abs_corr=float(np.min(vals)),
+        mean_abs_corr=float(np.mean(vals)),
+        median_abs_corr=float(np.median(vals)),
+    )
+
+
+def _min_upper_triangle(corr_abs: np.ndarray, *, early_stop: float | None = None) -> float:
+    n = corr_abs.shape[0]
+    min_val = 1.0
+    for i in range(n - 1):
+        row_min = float(np.min(corr_abs[i, i + 1 :]))
+        if row_min < min_val:
+            min_val = row_min
+            if early_stop is not None and min_val < early_stop:
+                return min_val
+    return min_val
+
+
+def compute_purity_filtered(
+    cs_variables: np.ndarray,
+    X: np.ndarray | None = None,
+    R: np.ndarray | None = None,
+    *,
+    n_purity: int = 100,
+    min_abs_corr: float = 0.0,
+) -> PurityMetrics | None:
+    """Compute purity and optionally short-circuit by minimum correlation.
+
+    Returns None when `min_abs_corr` filtering fails.
+    """
+    vars_idx = _subset_variables(np.asarray(cs_variables, dtype=int), int(n_purity))
+    if vars_idx.size <= 1:
+        purity = PurityMetrics(1.0, 1.0, 1.0)
+        return purity if purity.min_abs_corr >= min_abs_corr else None
+
+    if R is None and X is None:
+        raise ValueError("Either X or R must be provided to compute purity")
+
+    if R is not None:
+        R = np.asarray(R, dtype=float)
+        corr_abs = np.abs(R[np.ix_(vars_idx, vars_idx)])
+    else:
+        X = np.asarray(X, dtype=float)
+        sub = X[:, vars_idx]
+        corr = np.corrcoef(sub, rowvar=False)
+        if np.ndim(corr) == 0:
+            corr = np.array([[1.0]], dtype=float)
+        corr = np.nan_to_num(corr, nan=0.0)
+        corr_abs = np.abs(corr)
+
+    min_val = _min_upper_triangle(corr_abs, early_stop=min_abs_corr if min_abs_corr > 0 else None)
+    if min_val < min_abs_corr:
+        return None
+
+    vals = _upper_triangle_values(corr_abs)
+    if vals.size == 0:
+        return PurityMetrics(1.0, 1.0, 1.0)
+
+    return PurityMetrics(
+        min_abs_corr=float(min_val),
         mean_abs_corr=float(np.mean(vals)),
         median_abs_corr=float(np.median(vals)),
     )
