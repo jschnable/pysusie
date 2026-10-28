@@ -124,7 +124,7 @@ class SuSiE:
         null_weight: float = 0.0,
         standardize: bool = True,
         intercept: bool = True,
-        x_dtype: str = "float64",
+        x_dtype: str = "float32",
         max_iter: int = 100,
         tol: float = 1e-3,
         convergence_criterion: str = "elbo",

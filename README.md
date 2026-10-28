@@ -81,7 +81,7 @@ for cs in cs_list:
 | `estimate_residual_variance` | `True` | Learn residual variance from data |
 | `standardize` | `True` | Standardize columns of X before fitting |
 | `intercept` | `True` | Include an intercept term |
-| `x_dtype` | `"float64"` | `"float32"` stores the standardized dense X in single precision for the IBSS matrix-vector products (faster, same results to ~1e-4 in PIP) |
+| `x_dtype` | `"float32"` | Precision of the stored standardized dense X used in the IBSS matrix-vector products. Single precision is ~3x faster for those products and matches `"float64"` to ~1e-4 in PIP; statistics (means, scales, X'y) are always double precision |
 | `max_iter` | `100` | Maximum IBSS iterations |
 | `tol` | `1e-3` | Convergence tolerance |
 | `coverage` | `0.95` | Credible set coverage target |

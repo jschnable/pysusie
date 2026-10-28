@@ -80,12 +80,13 @@ def preprocess_individual_data(
     standardize: bool = True,
     intercept: bool = True,
     null_weight: float = 0.0,
-    x_dtype: str = "float64",
+    x_dtype: str = "float32",
 ) -> _FitData:
     """Validate and preprocess individual-level data.
 
-    x_dtype="float32" stores the centred/scaled dense X in single precision for the IBSS matrix-vector products
-    (about 3x faster: they are memory-bound). Means, scales, d and X'y are still computed in double precision.
+    The centred/scaled dense X is stored in single precision (x_dtype="float32") for the IBSS matrix-vector
+    products, which are memory-bound (about 3x faster than float64). Means, scales, d and X'y are computed in
+    double precision. x_dtype="float64" keeps a double-precision copy.
     """
     if x_dtype not in ("float64", "float32"):
         raise ValueError("x_dtype must be 'float64' or 'float32'")
@@ -434,7 +435,8 @@ def preprocess_summary_stats(
 
 def compute_sufficient_stats(X, y, *, standardize: bool = True):
     """Compute sufficient statistics from individual-level data."""
-    data = preprocess_individual_data(X, y, standardize=standardize, intercept=True)
+    # X'X is formed from the stored X, so keep it in double precision (float32 storage is only for IBSS products)
+    data = preprocess_individual_data(X, y, standardize=standardize, intercept=True, x_dtype="float64")
 
     if data.is_sparse:
         X_raw = data.X

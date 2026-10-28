@@ -131,3 +131,18 @@ def test_preprocess_summary_stats_rejects_non_positive_var_y():
 
     with pytest.raises(ValueError, match="var_y must be positive"):
         preprocess_summary_stats(z=z, R=R, n=100, var_y=-1.0)
+
+
+def test_compute_sufficient_stats_gram_is_double_precision():
+    # The IBSS path stores X in float32 by default; sufficient statistics must still be formed in float64.
+    import numpy as np
+    from pysusie import compute_sufficient_stats
+
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(200, 50))
+    y = rng.normal(size=200)
+    ss = compute_sufficient_stats(X, y)
+    XtX = ss["XtX"] if isinstance(ss, dict) else ss.XtX
+    Xc = (X - X.mean(0)) / X.std(0, ddof=1)
+    assert np.asarray(XtX).dtype == np.float64
+    assert np.allclose(XtX, Xc.T @ Xc, rtol=1e-12, atol=1e-10)
