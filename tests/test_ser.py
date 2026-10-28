@@ -65,3 +65,46 @@ def test_optimize_prior_variance_methods():
     assert v_simple >= 0
     assert v_em >= 0
     assert v_opt >= 0
+
+
+def test_fit_ser_drops_prior_variance_not_beating_null(monkeypatch):
+    # susieR keeps an estimated V only if the SER marginal likelihood at V exceeds that at V = 0.
+    # Force the optimiser to return a small positive V with no supporting signal: it must be reset to 0.
+    import pysusie._ser as ser
+
+    monkeypatch.setattr(ser, "_optimize_prior_variance", lambda **kw: 1e-4)
+    p = 6
+    res = fit_ser(
+        Xty_residual=np.zeros(p),
+        d=np.full(p, 700.0),
+        sigma2=1.0,
+        prior_variance=0.2,
+        prior_weights=np.full(p, 1.0 / p),
+        estimate_prior_variance=True,
+        prior_variance_method="optim",
+    )
+    assert res.V == 0.0
+    assert np.allclose(res.mu, 0.0)
+
+
+def test_optimize_prior_variance_keeps_current_v_when_search_is_worse():
+    # One variable with z ~ 4.2 among 1000: the SER marginal likelihood is ~0 on a plateau as V -> 0, dips
+    # slightly, and peaks (+0.31) near log V = -3.95. The bounded search settles on the plateau; as in susieR,
+    # a current V that scores better must be kept rather than dropping the effect.
+    from scipy.special import logsumexp
+    from pysusie._ser import _compute_lbf
+
+    p = 1000
+    d = np.full(p, 700.0)
+    shat2 = 1.0 / d
+    betahat = np.zeros(p)
+    betahat[0] = 0.16
+    pw = np.full(p, 1.0 / p)
+    V_cur = float(np.exp(-3.95))
+    V = _optimize_prior_variance(betahat=betahat, shat2=shat2, prior_weights=pw, V_init=V_cur, method="optim")
+
+    def lm(v):
+        return logsumexp(np.log(pw) + _compute_lbf(betahat, shat2, v))
+
+    assert V > 1e-6
+    assert lm(V) >= lm(V_cur) - 1e-12

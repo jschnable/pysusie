@@ -93,7 +93,13 @@ def _optimize_prior_variance(
     )
     if not opt.success:
         return max(float(V_init), 0.0)
-    return float(np.exp(opt.x))
+    V = float(np.exp(opt.x))
+    # As susieR: if the optimum found is worse than the current V, keep the current V. The marginal likelihood
+    # in log V can have a flat plateau near V -> 0 besides the real maximum, and the bounded search can settle
+    # on the plateau, dropping a supported effect (which then makes IBSS cycle with the residual variance).
+    if V_init > 0 and log_marginal(float(V_init)) > log_marginal(V):
+        return float(V_init)
+    return V
 
 
 def fit_ser(
@@ -141,6 +147,13 @@ def fit_ser(
             V_init=V,
             method=prior_variance_method,
         )
+        # As susieR's optimize_prior_variance: keep V only if the SER marginal likelihood at V beats V = 0
+        # (log marginal 0). Without this an effect with no signal can flip between V = 0 and a tiny V on
+        # alternate iterations, so the ELBO cycles and IBSS never converges.
+        if V > 0:
+            log_pi = np.log(np.clip(prior_weights, 1e-300, None))
+            if logsumexp(log_pi + _compute_lbf(betahat, shat2, V)) <= 0.0:
+                V = 0.0
 
     if V <= check_null_threshold:
         V = 0.0
