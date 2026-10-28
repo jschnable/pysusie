@@ -10,6 +10,10 @@ from ._elbo import compute_elbo
 from ._ser import fit_ser
 from ._types import _FitData, _ModelState
 
+# Reuse identical SER updates of zero-coefficient effects within an IBSS sweep (see ibss_loop). Exact; the
+# switch exists so tests can compare against the plain loop.
+_REUSE_NULL_EFFECTS = True
+
 
 def _expected_rss(data: _FitData, state: _ModelState) -> float:
     bbar = np.sum(state.alpha * state.mu, axis=0)
@@ -215,34 +219,47 @@ def ibss_loop(data: _FitData, state: _ModelState, params: dict[str, Any]) -> tup
 
     for it in range(max_iter):
         prior_variance_method = _select_prior_variance_method(it, max_iter, params)
+        # Reuse of null-effect updates (exact): an effect whose coefficients b_l are all zero contributes nothing to
+        # the fitted values, so its SER input is the full residual. Until some effect with non-zero coefficients is
+        # updated, every later zero effect with the same starting V sees identical inputs and gets an identical
+        # SER result, which is reused instead of recomputed. Fits typically use a few of L effects, so this skips
+        # most of the X'r products and prior-variance searches.
+        null_cache: dict[float, Any] = {}
         for l in range(L):
             b_old = state.alpha[l] * state.mu[l]
+            old_zero = not np.any(b_old)
+            ser = null_cache.get(float(state.V[l])) if old_zero and _REUSE_NULL_EFFECTS else None
 
-            if state.Xr is not None and data.y is not None:
-                if state.Xb_effects is not None:
-                    Xb_old = state.Xb_effects[l]
-                else:  # defensive fallback
-                    Xb_old = data.compute_Xb(b_old)
-                state.Xr -= Xb_old
-                Xty_residual = data.compute_Xty(data.y - state.Xr)
-            else:
-                if state.XtXb_effects is not None:
-                    XtXb_old = state.XtXb_effects[l]
+            if ser is None:
+                if state.Xr is not None and data.y is not None:
+                    if not old_zero:
+                        if state.Xb_effects is not None:
+                            Xb_old = state.Xb_effects[l]
+                        else:  # defensive fallback
+                            Xb_old = data.compute_Xb(b_old)
+                        state.Xr -= Xb_old
+                    Xty_residual = data.compute_Xty(data.y - state.Xr)
                 else:
-                    XtXb_old = data.compute_XtXb(b_old)
-                state.XtXr -= XtXb_old
-                Xty_residual = data.Xty - state.XtXr
+                    if not old_zero:
+                        if state.XtXb_effects is not None:
+                            XtXb_old = state.XtXb_effects[l]
+                        else:
+                            XtXb_old = data.compute_XtXb(b_old)
+                        state.XtXr -= XtXb_old
+                    Xty_residual = data.Xty - state.XtXr
 
-            ser = fit_ser(
-                Xty_residual=Xty_residual,
-                d=data.d,
-                sigma2=state.sigma2,
-                prior_variance=state.V[l],
-                prior_weights=prior_weights,
-                estimate_prior_variance=estimate_prior_variance,
-                prior_variance_method=prior_variance_method,
-                check_null_threshold=float(params.get("check_null_threshold", 1e-9)),
-            )
+                ser = fit_ser(
+                    Xty_residual=Xty_residual,
+                    d=data.d,
+                    sigma2=state.sigma2,
+                    prior_variance=state.V[l],
+                    prior_weights=prior_weights,
+                    estimate_prior_variance=estimate_prior_variance,
+                    prior_variance_method=prior_variance_method,
+                    check_null_threshold=float(params.get("check_null_threshold", 1e-9)),
+                )
+                if old_zero:
+                    null_cache[float(state.V[l])] = ser
 
             state.alpha[l] = ser.alpha
             state.mu[l] = ser.mu
@@ -253,18 +270,31 @@ def ibss_loop(data: _FitData, state: _ModelState, params: dict[str, Any]) -> tup
             state.lbf_variable[l] = ser.lbf_variable
 
             b_new = state.alpha[l] * state.mu[l]
+            new_zero = not np.any(b_new)
+            if not (old_zero and new_zero):
+                null_cache.clear()  # the fitted values change, so cached null updates are stale
             if state.Xr is not None and data.y is not None:
-                Xb_new = data.compute_Xb(b_new)
-                if state.Xb_effects is not None:
-                    state.Xb_effects[l] = Xb_new
-                state.Xr += Xb_new
-                state.Xb_sq_norms[l] = float(np.dot(Xb_new, Xb_new))
+                if new_zero:
+                    if state.Xb_effects is not None:
+                        state.Xb_effects[l] = 0.0
+                    state.Xb_sq_norms[l] = 0.0
+                else:
+                    Xb_new = data.compute_Xb(b_new)
+                    if state.Xb_effects is not None:
+                        state.Xb_effects[l] = Xb_new
+                    state.Xr += Xb_new
+                    state.Xb_sq_norms[l] = float(np.dot(Xb_new, Xb_new))
             else:
-                XtXb_new = data.compute_XtXb(b_new)
-                if state.XtXb_effects is not None:
-                    state.XtXb_effects[l] = XtXb_new
-                state.XtXr += XtXb_new
-                state.Xb_sq_norms[l] = float(np.dot(b_new, XtXb_new))
+                if new_zero:
+                    if state.XtXb_effects is not None:
+                        state.XtXb_effects[l] = 0.0
+                    state.Xb_sq_norms[l] = 0.0
+                else:
+                    XtXb_new = data.compute_XtXb(b_new)
+                    if state.XtXb_effects is not None:
+                        state.XtXb_effects[l] = XtXb_new
+                    state.XtXr += XtXb_new
+                    state.Xb_sq_norms[l] = float(np.dot(b_new, XtXb_new))
 
         elbo = compute_elbo(data, state)
         elbo_trace.append(elbo)

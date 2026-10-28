@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from pysusie._ibss import ibss_loop
 from pysusie._preprocessing import preprocess_individual_data, preprocess_sufficient_stats
@@ -253,3 +254,38 @@ def test_ibss_ss_batched_xtx_updates_match_direct_products():
         bl = state_out.alpha[l] * state_out.mu[l]
         direct = data.compute_XtXb(bl)
         assert np.allclose(state_out.XtXb_effects[l], direct, atol=1e-10)
+
+
+@pytest.mark.parametrize("x_dtype", ["float32", "float64"])
+def test_null_effect_reuse_is_exact_and_skips_work(monkeypatch, x_dtype):
+    # Zero-coefficient effects share identical SER inputs within a sweep; reusing their update must give exactly
+    # the same fit as recomputing it, with fewer SER evaluations.
+    import pysusie._ibss as ibss
+    from pysusie import SuSiE
+
+    rng = np.random.default_rng(11)
+    n, p = 400, 600
+    X = rng.binomial(2, 0.3, size=(n, p)).astype(float)
+    y = 0.6 * X[:, 50] - 0.5 * X[:, 420] + rng.normal(size=n)
+    kw = dict(n_effects=10, prior_variance_optim_period=1, prior_variance_warmup_iters=0, x_dtype=x_dtype)
+
+    calls = {"n": 0}
+    orig = ibss.fit_ser
+
+    def counting(**k):
+        calls["n"] += 1
+        return orig(**k)
+
+    monkeypatch.setattr(ibss, "fit_ser", counting)
+    fast = SuSiE(**kw).fit(X, y).result_
+    n_fast = calls["n"]
+    monkeypatch.setattr(ibss, "_REUSE_NULL_EFFECTS", False)
+    calls["n"] = 0
+    plain = SuSiE(**kw).fit(X, y).result_
+
+    assert n_fast < calls["n"]
+    assert fast.n_iter == plain.n_iter
+    assert np.array_equal(fast.alpha, plain.alpha)
+    assert np.array_equal(fast.mu, plain.mu)
+    assert np.array_equal(fast.prior_variance, plain.prior_variance)
+    assert np.array_equal(np.asarray(fast.elbo), np.asarray(plain.elbo))
