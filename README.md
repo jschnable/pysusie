@@ -18,20 +18,30 @@ Key features:
 - **Pure Python + NumPy/SciPy** — no compiled extensions required.
 - **Credible sets with purity filtering** — automatically identifies
   independent signals and removes sets driven by LD.
-- **Optional Numba JIT** — install the `numba` extra for faster inner loops.
+- **Fast** — numba-accelerated prior-variance search, single-precision storage of X for the IBSS
+  matrix-vector products, and reuse of identical updates for unused effects: about 12x faster than susieR
+  on 1k-10k-variable regions with results matching susieR (see "Matching susieR" below).
 
 ## Installation
 
+Install from GitHub (pin a release tag for reproducible analyses):
+
 ```bash
-pip install pysusie
+pip install "pysusie[numba] @ git+https://github.com/jschnable/pysusie.git@v1.0.0"
 ```
+
+> **Note:** the name `pysusie` on PyPI belongs to a different, unrelated package (omicverse's py-susie port).
+> `pip install pysusie` installs that package, not this one. Install from GitHub as above.
+
+`numba` is optional but recommended: it accelerates the prior-variance search, which dominates run time for
+large regions. Check the installed version with `python -c "import pysusie; print(pysusie.__version__)"`.
 
 For development:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/jschnable/pysusie.git
 cd pysusie
-pip install -e ".[dev]"
+pip install -e ".[dev,numba]"
 ```
 
 ## Quick Start — Individual-Level Data

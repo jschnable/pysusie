@@ -1,5 +1,7 @@
 """Public package interface for pysusie."""
 
+__version__ = "1.0.0"  # keep in sync with pyproject.toml
+
 from ._credible_sets import compute_purity, extract_credible_sets
 from ._mrash import fit_mrash
 from ._preprocessing import (
@@ -17,6 +19,7 @@ from .datasets import load_example
 from .susie import SuSiE, susie_auto
 
 __all__ = [
+    "__version__",
     "SuSiE",
     "SuSiEResult",
     "CredibleSet",

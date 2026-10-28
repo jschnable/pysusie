@@ -394,3 +394,14 @@ def test_default_float32_x_matches_float64():
     assert abs(m64.result_.elbo[-1] - m32.result_.elbo[-1]) < 1e-3
     with pytest.raises(ValueError):
         SuSiE(x_dtype="float16").fit(X, y)
+
+
+def test_version_matches_pyproject():
+    import pathlib
+    import re
+
+    import pysusie
+
+    pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.M)
+    assert m is not None and pysusie.__version__ == m.group(1)
