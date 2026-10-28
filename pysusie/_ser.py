@@ -6,6 +6,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 from scipy.special import logsumexp
 
+from ._numba_kernels import _ser_log_marginal
 from ._types import SERResult
 from ._utils import EPS, softmax_log_weights
 
@@ -56,8 +57,7 @@ def _optimize_prior_variance(
     def log_marginal(V: float) -> float:
         if V <= 0:
             return 0.0
-        lbf = _compute_lbf(betahat, shat2, V)
-        return float(logsumexp(log_pi + lbf))
+        return float(_ser_log_marginal(betahat, shat2, log_pi, float(V)))
 
     method = method.lower()
     if method == "simple":
@@ -152,7 +152,7 @@ def fit_ser(
         # alternate iterations, so the ELBO cycles and IBSS never converges.
         if V > 0:
             log_pi = np.log(np.clip(prior_weights, 1e-300, None))
-            if logsumexp(log_pi + _compute_lbf(betahat, shat2, V)) <= 0.0:
+            if _ser_log_marginal(betahat, shat2, log_pi, float(V)) <= 0.0:
                 V = 0.0
 
     if V <= check_null_threshold:

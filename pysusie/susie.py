@@ -93,6 +93,7 @@ class SuSiE:
         "null_weight",
         "standardize",
         "intercept",
+        "x_dtype",
         "max_iter",
         "tol",
         "convergence_criterion",
@@ -123,6 +124,7 @@ class SuSiE:
         null_weight: float = 0.0,
         standardize: bool = True,
         intercept: bool = True,
+        x_dtype: str = "float64",
         max_iter: int = 100,
         tol: float = 1e-3,
         convergence_criterion: str = "elbo",
@@ -149,6 +151,7 @@ class SuSiE:
         self.null_weight = float(null_weight)
         self.standardize = bool(standardize)
         self.intercept = bool(intercept)
+        self.x_dtype = str(x_dtype)
         self.max_iter = int(max_iter)
         self.tol = float(tol)
         self.convergence_criterion = str(convergence_criterion)
@@ -195,7 +198,8 @@ class SuSiE:
             "verbose",
         }:
             return bool(value)
-        if key in {"prior_variance_method", "residual_variance_method", "convergence_criterion", "xtx_update_mode"}:
+        if key in {"prior_variance_method", "residual_variance_method", "convergence_criterion", "xtx_update_mode",
+                   "x_dtype"}:
             return str(value)
         return value
 
@@ -710,6 +714,7 @@ class SuSiE:
                 standardize=self.standardize,
                 intercept=self.intercept,
                 null_weight=self.null_weight,
+                x_dtype=self.x_dtype,
             )
 
             p_phys = data.p - (1 if data.has_null_column else 0)

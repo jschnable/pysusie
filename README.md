@@ -81,6 +81,7 @@ for cs in cs_list:
 | `estimate_residual_variance` | `True` | Learn residual variance from data |
 | `standardize` | `True` | Standardize columns of X before fitting |
 | `intercept` | `True` | Include an intercept term |
+| `x_dtype` | `"float64"` | `"float32"` stores the standardized dense X in single precision for the IBSS matrix-vector products (faster, same results to ~1e-4 in PIP) |
 | `max_iter` | `100` | Maximum IBSS iterations |
 | `tol` | `1e-3` | Convergence tolerance |
 | `coverage` | `0.95` | Credible set coverage target |
@@ -88,6 +89,15 @@ for cs in cs_list:
 | `refine` | `False` | Run credible-set refinement procedure |
 | `null_weight` | `0.0` | Prior mass on the null (no variable selected) |
 | `verbose` | `False` | Print convergence diagnostics |
+
+**Matching susieR.** The defaults trade a little fidelity for speed (prior variance optimised every 5th
+iteration with EM in between, residual variance divided by n - 1, variables with < 10 carriers dropped).
+For results equivalent to `susieR::susie(X, y, L = 10)` use
+`SuSiE(n_effects=10, prior_variance_optim_period=1, prior_variance_warmup_iters=0,
+residual_variance_method="mle", min_carriers=0, min_noncarriers=0)`. Benchmarked against susieR 0.14.2 on
+192 regions of real maize genotypes (711 lines, 1k-10k SNPs): max |PIP difference| 0.01, ELBO within 0.0015,
+identical credible sets in 189/192, about 5x faster single-threaded. `min_carriers` counts entries with
+X > 0, so set it to 0 when X is not a 0/1/2 dosage matrix (e.g. residualised or kinship-whitened genotypes).
 
 **Methods:**
 

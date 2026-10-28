@@ -108,3 +108,22 @@ def test_optimize_prior_variance_keeps_current_v_when_search_is_worse():
 
     assert V > 1e-6
     assert lm(V) >= lm(V_cur) - 1e-12
+
+
+def test_ser_log_marginal_kernel_matches_reference():
+    # The fused kernel (numba when available) and its numpy fallback must equal logsumexp(log_pi + lbf).
+    from scipy.special import logsumexp
+    from pysusie._numba_kernels import _ser_log_marginal, _ser_log_marginal_numpy
+    from pysusie._ser import _compute_lbf
+
+    rng = np.random.default_rng(1)
+    p = 500
+    betahat = rng.normal(0.0, 0.1, p)
+    shat2 = rng.uniform(0.5, 2.0, p) / 700.0
+    shat2[3] = np.inf
+    shat2[7] = 0.0
+    log_pi = np.log(rng.dirichlet(np.ones(p)))
+    for V in [1e-12, 1e-4, 0.01, 1.0, 1e5]:
+        ref = logsumexp(log_pi + _compute_lbf(betahat, shat2, V))
+        assert np.isclose(_ser_log_marginal(betahat, shat2, log_pi, V), ref, rtol=1e-12, atol=1e-12)
+        assert np.isclose(_ser_log_marginal_numpy(betahat, shat2, log_pi, V), ref, rtol=1e-12, atol=1e-12)

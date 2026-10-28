@@ -77,7 +77,7 @@ class _FitData:
         b_phys = b[:-1] if self.has_null_column else b
 
         if not self.is_sparse:
-            return np.asarray(self.X @ b_phys, dtype=float)
+            return np.asarray(self.X @ b_phys.astype(self.X.dtype, copy=False), dtype=float)
 
         if self.X_scale is None:
             raise ValueError("Sparse path requires X_scale")
@@ -96,7 +96,7 @@ class _FitData:
         r = np.asarray(r, dtype=float)
 
         if not self.is_sparse:
-            out = np.asarray(self.X.T @ r, dtype=float)
+            out = np.asarray(self.X.T @ r.astype(self.X.dtype, copy=False), dtype=float)
         else:
             if self.X_scale is None:
                 raise ValueError("Sparse path requires X_scale")

@@ -80,8 +80,15 @@ def preprocess_individual_data(
     standardize: bool = True,
     intercept: bool = True,
     null_weight: float = 0.0,
+    x_dtype: str = "float64",
 ) -> _FitData:
-    """Validate and preprocess individual-level data."""
+    """Validate and preprocess individual-level data.
+
+    x_dtype="float32" stores the centred/scaled dense X in single precision for the IBSS matrix-vector products
+    (about 3x faster: they are memory-bound). Means, scales, d and X'y are still computed in double precision.
+    """
+    if x_dtype not in ("float64", "float32"):
+        raise ValueError("x_dtype must be 'float64' or 'float32'")
     y_arr = ensure_1d(y, name="y").astype(float, copy=True)
     _validate_no_nan(y_arr, "y")
 
@@ -133,21 +140,26 @@ def preprocess_individual_data(
         if intercept:
             X_trans -= means
 
+        # Column sums of squares without a full-size temporary; with centred columns they also give the
+        # standard deviations, and d follows from them without another pass over X.
+        ss = np.einsum("ij,ij->j", X_trans, X_trans)
         if standardize:
-            scale = np.std(X_trans, axis=0, ddof=1)
+            if intercept:
+                scale = np.sqrt(ss / max(n - 1, 1))
+            else:
+                scale = np.std(X_trans, axis=0, ddof=1)
             if np.any(scale <= 0):
                 raise ValueError("X contains constant columns")
         else:
             scale = np.ones(p_phys)
-            ss = np.sum(X_trans**2, axis=0)
             if np.any(ss <= 0):
                 raise ValueError("X contains constant columns")
 
         X_trans /= scale
-        d = np.sum(X_trans**2, axis=0)
+        d = ss / scale**2
         Xty = np.asarray(X_trans.T @ y_centered, dtype=float)
 
-        X_store = X_trans
+        X_store = X_trans if x_dtype == "float64" else np.ascontiguousarray(X_trans, dtype=np.float32)
         X_center = means
         X_scale = scale
         is_sparse = False

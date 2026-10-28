@@ -1,4 +1,4 @@
-"""Optional numba kernels for Mr.ASH."""
+"""Optional numba kernels for Mr.ASH and the SER prior-variance search."""
 
 from __future__ import annotations
 
@@ -172,3 +172,50 @@ except Exception:  # pragma: no cover - fallback path
                 break
 
         return beta, pi, sigma2, np.array(elbo), converged, len(elbo)
+
+
+def _ser_log_marginal_numpy(betahat, shat2, log_pi, V):
+    """log sum_j pi_j BF_j(V) for the SER; variables with non-finite or zero shat2 have BF 1."""
+    lbf = np.zeros_like(betahat)
+    mask = np.isfinite(shat2) & (shat2 > 0)
+    s2 = shat2[mask]
+    b = betahat[mask]
+    lbf[mask] = -0.5 * np.log1p(V / s2) + 0.5 * (b * b) * V / (s2 * (s2 + V))
+    a = log_pi + lbf
+    m = np.max(a)
+    return float(m + np.log(np.sum(np.exp(a - m))))
+
+
+try:  # pragma: no cover - numba path depends on environment
+    import numba as _nb
+
+    @_nb.njit(cache=True, fastmath=True)
+    def _ser_log_marginal(betahat, shat2, log_pi, V):
+        # Fused single-effect log marginal likelihood (no temporaries beyond one buffer). Called ~20 times per SER
+        # update by the prior-variance search, so it dominates for large p. log1p(V / s2) is reused while s2
+        # repeats, which is every variable when X is standardized (d_j = n - 1 for all j).
+        p = betahat.shape[0]
+        a = np.empty(p)
+        m = -np.inf
+        last_s2 = -1.0
+        half_log1p = 0.0
+        for j in range(p):
+            s2 = shat2[j]
+            aj = log_pi[j]
+            if s2 > 0.0 and s2 < np.inf:
+                if s2 != last_s2:
+                    half_log1p = 0.5 * np.log1p(V / s2)
+                    last_s2 = s2
+                aj += 0.5 * betahat[j] * betahat[j] * V / (s2 * (s2 + V)) - half_log1p
+            a[j] = aj
+            if aj > m:
+                m = aj
+        tot = 0.0
+        for j in range(p):
+            dj = a[j] - m
+            if dj > -40.0:  # terms below exp(-40) change the sum by < p * 4e-18 relative
+                tot += np.exp(dj)
+        return m + np.log(tot)
+
+except Exception:  # pragma: no cover - fallback path
+    _ser_log_marginal = _ser_log_marginal_numpy

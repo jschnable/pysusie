@@ -380,3 +380,17 @@ def test_get_credible_sets_uses_original_indices_after_filtering():
     cs = result.get_credible_sets(coverage=0.8)
     assert len(cs) == 1
     np.testing.assert_array_equal(cs[0].variables, np.array([3]))
+
+
+def test_float32_x_matches_float64():
+    # x_dtype="float32" only changes the precision of the IBSS matrix-vector products.
+    rng = np.random.default_rng(7)
+    n, p = 300, 400
+    X = rng.binomial(2, 0.3, size=(n, p)).astype(float)
+    y = X[:, 10] * 0.5 - X[:, 200] * 0.4 + rng.normal(size=n)
+    m64 = SuSiE(n_effects=5).fit(X, y)
+    m32 = SuSiE(n_effects=5, x_dtype="float32").fit(X, y)
+    assert np.max(np.abs(m64.result_.pip - m32.result_.pip)) < 1e-4
+    assert abs(m64.result_.elbo[-1] - m32.result_.elbo[-1]) < 1e-3
+    with pytest.raises(ValueError):
+        SuSiE(x_dtype="float16").fit(X, y)
